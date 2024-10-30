@@ -1,9 +1,9 @@
+from typing import Tuple, Optional
 from functools import cached_property
-from typing import Optional, Tuple
 
 import torch
-import torch.jit
 import torch.nn as nn
+import torch.jit
 
 
 class RejectionSampler(nn.Module):
@@ -12,21 +12,17 @@ class RejectionSampler(nn.Module):
         https://arxiv.org/pdf/2302.01318.pdf.
     """
 
-    def __init__(self,
-                 disable_bonus_tokens: bool = True,
-                 strict_mode: bool = False):
+    def __init__(self, strict_mode: bool = False):
         """Create a rejection sampler.
 
         Args:
-            disable_bonus_tokens: Whether or not to disable the bonus token.
-            Require when bonus tokens will cause corrupt KV cache for
-            proposal methods that require KV cache.
             strict_mode: Whether or not to perform shape/device/dtype checks
                 during sampling. This catches correctness issues but adds
                 nontrivial latency.
         """
         super().__init__()
-        self._disable_bonus_tokens = disable_bonus_tokens
+        self.probs_dtype = torch.float32
+        self.token_id_dtype = torch.int64
         self._strict_mode = strict_mode
 
         # NOTE: A "bonus token" is accepted iff all proposal tokens are
@@ -47,14 +43,6 @@ class RejectionSampler(nn.Module):
         self.num_emitted_tokens = torch.tensor(0,
                                                dtype=torch.long,
                                                device=device)
-
-    @property
-    def probs_dtype(self):
-        return torch.float32
-
-    @property
-    def token_id_dtype(self):
-        return torch.int64
 
     def forward(
         self,
@@ -150,7 +138,6 @@ class RejectionSampler(nn.Module):
         recovered_probs = self._get_recovered_probs(
             target_probs, draft_probs).reshape(batch_size * k, vocab_size)
 
-        # NOTE: the recovered_probs are overwritten by this method.
         recovered_token_ids = _multinomial(recovered_probs,
                                            num_samples=1).reshape(
                                                batch_size, k)
@@ -313,13 +300,6 @@ class RejectionSampler(nn.Module):
         # with causal acceptance.
         output_with_bonus_tokens[:, -1] = torch.where(output[:, -1] != -1,
                                                       bonus_token_ids, -1)
-
-        # We disable bonus tokens because it causes corrupt KV cache for
-        # proposal methods that require KV cache. We can fix it by "prefilling"
-        # the bonus token in the proposer. The following issue tracks the fix.
-        # https://github.com/vllm-project/vllm/issues/4212
-        if self._disable_bonus_tokens:
-            output_with_bonus_tokens[:, -1] = -1
 
         # Fill the recovered token ids.
         output.mul_(~after_false_mask).add_(
